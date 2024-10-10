@@ -17,10 +17,9 @@ RUN apt-get update && \
     librdmacm-dev \
     librdmacm1 \
     rdma-core \
-    rdmacm-utils
-    #&& \
-    # apt-get clean && \
-    # rm -rf /var/lib/apt/lists/*
+    rdmacm-utils && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Create a directory for building tcpdump and libpcap
 RUN mkdir /tcpdumpbuild
