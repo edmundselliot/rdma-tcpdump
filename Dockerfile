@@ -20,6 +20,7 @@ RUN apt-get update && \
     cmake \
     python3 \
     python3-pip \
+    gdb \
     pkg-config && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
