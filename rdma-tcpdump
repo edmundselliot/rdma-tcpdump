@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+for cmd in docker git; do
+    if ! command -v "${cmd}" >/dev/null 2>&1; then
+        echo "Error: '${cmd}' is required but not found in PATH" >&2
+        exit 1
+    fi
+done
+
+IMAGE_NAME="rdma-tcpdump"
+REPO_URL="https://github.com/edmundselliot/rdma-tcpdump.git"
+CACHE_DIR="${HOME}/.cache/rdma-tcpdump"
+
+usage() {
+    echo "Usage: rdma-tcpdump [OPTIONS] [TCPDUMP_ARGS...]"
+    echo ""
+    echo "RDMA-enabled tcpdump in Docker."
+    echo ""
+    echo "Options:"
+    echo "  --rebuild    Force rebuild the Docker image"
+    echo "  --help       Show this help message"
+    echo ""
+    echo "All other arguments are passed directly to tcpdump."
+    echo ""
+    echo "Examples:"
+    echo "  rdma-tcpdump -D              # List available devices"
+    echo "  rdma-tcpdump -ni mlx5_0      # Capture on mlx5_0"
+}
+
+build_image() {
+    echo "Building ${IMAGE_NAME} Docker image..."
+
+    if [ ! -d "${CACHE_DIR}" ]; then
+        echo "Cloning repository..."
+        git clone --quiet "${REPO_URL}" "${CACHE_DIR}"
+    else
+        echo "Updating cached repository..."
+        git -C "${CACHE_DIR}" pull --ff-only --quiet || echo "Warning: could not update cached repository, building from existing checkout"
+    fi
+
+    local build_log
+    build_log=$(mktemp)
+
+    if docker build -t "${IMAGE_NAME}" "${CACHE_DIR}" 2>&1 | \
+        tee "${build_log}" | \
+        grep --line-buffered -E "^(Step |Successfully )"; then
+        rm -f "${build_log}"
+    else
+        echo ""
+        echo "Build failed! Full output:"
+        cat "${build_log}"
+        rm -f "${build_log}"
+        exit 1
+    fi
+}
+
+image_exists() {
+    docker image inspect "${IMAGE_NAME}" >/dev/null 2>&1
+}
+
+# Parse our own flags (--rebuild, --help) before passing rest to tcpdump
+REBUILD=false
+ARGS=()
+
+for arg in "$@"; do
+    case "${arg}" in
+        --rebuild)
+            REBUILD=true
+            ;;
+        --help)
+            usage
+            exit 0
+            ;;
+        *)
+            ARGS+=("${arg}")
+            ;;
+    esac
+done
+
+# Build if needed
+if [ "${REBUILD}" = true ] || ! image_exists; then
+    build_image
+fi
+
+# Run tcpdump with all remaining arguments
+DOCKER_OPTS=(--rm --privileged --network host)
+if [ -t 0 ] && [ -t 1 ]; then
+    DOCKER_OPTS+=(-it)
+fi
+exec docker run "${DOCKER_OPTS[@]}" "${IMAGE_NAME}" ${ARGS[@]+"${ARGS[@]}"}

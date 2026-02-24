@@ -1,12 +1,10 @@
-# Use an official Ubuntu base image
-FROM ubuntu:latest
+# Stage 1: Common build dependencies
+FROM ubuntu:latest AS builder-base
 
-# Set environment variables to avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install necessary packages
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
     git \
     build-essential \
     autoconf \
@@ -14,48 +12,73 @@ RUN apt-get update && \
     libtool \
     flex \
     bison \
-    librdmacm-dev \
-    librdmacm1 \
-    rdmacm-utils \
     cmake \
     python3 \
-    python3-pip \
-    gdb \
-    pkg-config && \
+    pkg-config \
+    librdmacm-dev \
+    ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Create a directory for building projects
-RUN mkdir /build
 WORKDIR /build
 
-# Clone all repos
-WORKDIR /build
-RUN git clone https://github.com/linux-rdma/rdma-core.git && \
-    git clone https://github.com/the-tcpdump-group/tcpdump.git && \
-    git clone https://github.com/the-tcpdump-group/libpcap.git
+# Stage 2: Build rdma-core (libibverbs)
+FROM builder-base AS build-rdma-core
 
-# Build and install libibverbs
+RUN git clone --depth 1 https://github.com/linux-rdma/rdma-core.git /build/rdma-core
+
 WORKDIR /build/rdma-core
 RUN ./build.sh
 
-# Clear PKG_CONFIG_PATH to avoid conflicts with DPDK
+# Stage 3: Build libpcap with RDMA support
+FROM builder-base AS build-libpcap
+
+COPY --from=build-rdma-core /build/rdma-core/build /build/rdma-core/build
+
 ENV PKG_CONFIG_PATH="/build/rdma-core/build/lib/pkgconfig"
 
-# Build libpcap with RDMA support
+RUN git clone --depth 1 https://github.com/the-tcpdump-group/libpcap.git /build/libpcap
+
 WORKDIR /build/libpcap
 RUN ./autogen.sh && \
     ./configure --enable-rdma=yes && \
     make
 
-ENV PKG_CONFIG_PATH="/build/rdma-core/build/lib:/build/libpcap"
+# Stage 4: Build tcpdump
+FROM builder-base AS build-tcpdump
 
-# Build tcpdump
+COPY --from=build-rdma-core /build/rdma-core/build /build/rdma-core/build
+COPY --from=build-libpcap /build/libpcap /build/libpcap
+
+ENV PKG_CONFIG_PATH="/build/rdma-core/build/lib/pkgconfig:/build/libpcap"
+
+RUN git clone --depth 1 https://github.com/the-tcpdump-group/tcpdump.git /build/tcpdump
+
 WORKDIR /build/tcpdump
 RUN ./autogen.sh && \
     ./configure && \
     make
 
-# Set the entrypoint
-ENTRYPOINT ["/bin/bash"]
-WORKDIR /build/tcpdump
+# Stage 5: Minimal runtime image
+FROM ubuntu:latest AS runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    librdmacm1 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build-tcpdump /build/tcpdump/tcpdump /usr/local/bin/tcpdump
+COPY --from=build-rdma-core /build/rdma-core/build/lib/ /usr/local/lib/
+COPY --from=build-libpcap /build/libpcap/libpcap.so* /usr/local/lib/
+
+# libibverbs has hardcoded paths to its config and driver plugins from the
+# build tree. Copy the config dir and symlink the lib path so drivers load.
+COPY --from=build-rdma-core /build/rdma-core/build/etc /build/rdma-core/build/etc
+RUN ln -s /usr/local/lib /build/rdma-core/build/lib
+
+RUN ldconfig
+
+ENTRYPOINT ["tcpdump"]
