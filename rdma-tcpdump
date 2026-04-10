@@ -84,7 +84,7 @@ if [ "${REBUILD}" = true ] || ! image_exists; then
 fi
 
 # Run tcpdump with all remaining arguments
-DOCKER_OPTS=(--rm --privileged --network host)
+DOCKER_OPTS=(--rm --privileged --network host -v /tmp:/tmp)
 if [ -t 0 ] && [ -t 1 ]; then
     DOCKER_OPTS+=(-it)
 fi
